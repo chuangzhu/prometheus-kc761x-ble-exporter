@@ -46,8 +46,10 @@ class KC761xCollector:
             command_timeout=self.args.command_timeout,
             spectrum_idle_timeout=self.args.spectrum_idle_timeout,
             mtu=self.args.mtu,
+            reconnect_interval=self.args.reconnect_interval,
             next_sync=self._next_sync,
         )
+        self._connection_task = asyncio.run_coroutine_threadsafe(self._client.run_connection_loop(), self._loop)
 
     def collect(self) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
         with self._lock:
@@ -60,6 +62,7 @@ class KC761xCollector:
             future.result(timeout=5)
         except Exception:
             LOG.exception("failed to close KC761x BLE client")
+        self._connection_task.cancel()
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
 
@@ -71,6 +74,11 @@ class KC761xCollector:
     def _scrape(self) -> ScrapeResult:
         started = time.monotonic()
         result = ScrapeResult()
+        if not self._client.is_connected:
+            result.error = "KC761x BLE device is not connected"
+            result.duration_seconds = time.monotonic() - started
+            return result
+
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._client.scrape(self.args.enable_spectrum, self.args.spectrum_source),
@@ -256,6 +264,7 @@ class KC761xBleClient:
         command_timeout: float,
         spectrum_idle_timeout: float,
         mtu: int | None,
+        reconnect_interval: float,
         next_sync: Callable[[], int],
     ) -> None:
         self.address = address
@@ -264,19 +273,33 @@ class KC761xBleClient:
         self.command_timeout = command_timeout
         self.spectrum_idle_timeout = spectrum_idle_timeout
         self.mtu = mtu
+        self.reconnect_interval = reconnect_interval
         self.next_sync = next_sync
         self.decode_errors = 0
         self._client: BleakClient | None = None
-        self._notify_started = False
         self._resolved_address: str | None = address
         self._queue: asyncio.Queue[protocol.Packet] = asyncio.Queue()
+        self._closing = False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._client is not None and self._client.is_connected
+
+    async def run_connection_loop(self) -> None:
+        while not self._closing:
+            if not self.is_connected:
+                try:
+                    await self._connect()
+                except Exception as exc:
+                    LOG.warning("KC761x BLE connection attempt failed: %s", exc)
+                    await self._disconnect()
+            await asyncio.sleep(self.reconnect_interval)
 
     async def scrape(self, enable_spectrum: bool, spectrum_sources: Sequence[int]) -> ScrapeResult:
         result = ScrapeResult()
         self.decode_errors = 0
-        await self._ensure_connected()
         if self._client is None:
-            raise RuntimeError("BLE client was not initialized")
+            raise RuntimeError("KC761x BLE device is not connected")
 
         try:
             self._drain_queue()
@@ -307,12 +330,10 @@ class KC761xBleClient:
         return result
 
     async def close(self) -> None:
+        self._closing = True
         await self._disconnect()
 
-    async def _ensure_connected(self) -> None:
-        if self._client is not None and self._client.is_connected:
-            return
-
+    async def _connect(self) -> None:
         await self._disconnect()
         address = self._resolved_address or await self._discover_address()
         LOG.info("connecting to %s", address)
@@ -323,12 +344,10 @@ class KC761xBleClient:
         if self.mtu:
             await self._request_mtu(client)
         await client.start_notify(protocol.TX_CHAR_UUID, self._on_notify)
-        self._notify_started = True
 
     async def _disconnect(self) -> None:
         client = self._client
         self._client = None
-        self._notify_started = False
         if client is None:
             return
         try:
@@ -431,6 +450,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scrape-timeout", type=float, default=9.0, help="Exporter-side maximum seconds for a scrape")
     parser.add_argument("--command-timeout", type=float, default=8.0, help="Seconds to wait for each KC761x command response")
     parser.add_argument("--discovery-timeout", type=float, default=5.0, help="BLE discovery timeout in seconds")
+    parser.add_argument("--reconnect-interval", type=float, default=5.0, help="Seconds between background BLE reconnect attempts")
     parser.add_argument("--mtu", type=int, default=517, help="Requested BLE MTU, if backend supports it")
     parser.add_argument("--enable-spectrum", action="store_true", help="Expose spectrum channel gauges; disabled by default")
     parser.add_argument("--max-spectrum-channels", type=int, default=2048, help="Maximum spectrum channels to expose")

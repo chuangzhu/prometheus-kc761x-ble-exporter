@@ -37,24 +37,25 @@ Then scrape:
 curl http://127.0.0.1:9108/metrics
 ```
 
-The exporter is synchronous from Prometheus' point of view: it reads status/device info only when Prometheus scrapes `/metrics`. It keeps the BLE connection open between scrapes to avoid repeated BLE connection setup, reconnecting only after a failed or dropped link. It does not poll the device on its own timer and it does not attach Prometheus sample timestamps.
+The exporter is synchronous from Prometheus' point of view: it reads status/device info only when Prometheus scrapes `/metrics`. A separate background loop establishes and maintains the BLE connection. If the device is not connected when Prometheus scrapes, the exporter returns `kc761x_up=0` immediately instead of blocking on reconnect. It does not poll the device on its own timer and it does not attach Prometheus sample timestamps.
 
 Useful options:
 
 - `--scrape-timeout 9`: exporter-side maximum seconds for a scrape.
 - `--command-timeout 8`: seconds to wait for each KC761x command response.
 - `--discovery-timeout 5`: BLE discovery timeout when using `--name`.
+- `--reconnect-interval 5`: seconds between background BLE reconnect attempts.
 - `--enable-spectrum`: expose per-channel spectrum gauges as `kc761x_spectrum_counts{source,channel}`. This can create thousands of time series.
 - `--spectrum-source 0`: spectrum source to request when spectrum export is enabled. Repeat for multiple sources.
 - `--mtu 517`: request a large BLE MTU when the platform/backend supports it.
 
-Prometheus' default scrape timeout is 10 seconds. The first scrape performs BLE discovery if `--name` is used and opens the BLE connection; later scrapes reuse that connection. Use `--address` for more predictable startup behavior. If `--enable-spectrum` is used, a scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. In that case set an explicit Prometheus `scrape_timeout` greater than the exporter `--scrape-timeout`, or leave spectrum export disabled.
+Prometheus' default scrape timeout is 10 seconds. Startup and reconnect discovery happen outside the scrape path; use `--address` for more predictable connection setup. If `--enable-spectrum` is used, a connected scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. In that case set an explicit Prometheus `scrape_timeout` greater than the exporter `--scrape-timeout`, or leave spectrum export disabled.
 
 ## Metrics
 
 The exporter exposes:
 
-- `kc761x_up`: KC761x BLE scrape succeeded.
+- `kc761x_up`: KC761x BLE device is connected and the scrape succeeded.
 - `kc761x_scrape_duration_seconds`
 - `kc761x_scrape_decode_errors`
 - `kc761x_battery_ratio`
