@@ -77,7 +77,7 @@ The exporter exposes:
 - `kc761x_sensor_dose_runtime_seconds{slot,sensor}`
 - `kc761x_spectrum_counts{source,channel}` when `--enable-spectrum` is set.
 
-Disabled sensors report `-1` in the KC761x protocol. The exporter preserves that value.
+Disabled sensors report `-1` in the KC761x protocol. The exporter omits negative sensor samples instead of exporting them.
 
 ## Prometheus scrape config
 

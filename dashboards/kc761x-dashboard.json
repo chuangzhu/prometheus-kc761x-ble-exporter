@@ -551,22 +551,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_avg_cps{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
-          "legendFormat": "{{instance}} {{sensor}} avg",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "kc761x_sensor_raw_cps{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
-          "hide": true,
+          "expr": "kc761x_sensor_raw_cps{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} raw",
           "range": true,
-          "refId": "B"
+          "refId": "A"
         }
       ],
       "title": "Count Rate",
@@ -635,7 +623,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_avg_dose_rate_mgy_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
+          "expr": "kc761x_sensor_raw_dose_rate_mgy_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} mGy/h",
           "range": true,
           "refId": "A"
@@ -646,7 +634,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_avg_dose_equivalent_rate_msv_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
+          "expr": "kc761x_sensor_raw_dose_equivalent_rate_msv_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} mSv/h",
           "range": true,
           "refId": "B"
@@ -709,7 +697,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_accumulated_dose_ugy{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
+          "expr": "kc761x_sensor_accumulated_dose_ugy{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} uGy",
           "range": true,
           "refId": "A"
@@ -720,7 +708,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_accumulated_dose_equivalent_usv{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
+          "expr": "kc761x_sensor_accumulated_dose_equivalent_usv{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} uSv",
           "range": true,
           "refId": "B"
@@ -783,7 +771,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_dose_runtime_seconds{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
+          "expr": "kc761x_sensor_dose_runtime_seconds{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} dose",
           "range": true,
           "refId": "A"
@@ -794,7 +782,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_multichannel_runtime_seconds{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}",
+          "expr": "kc761x_sensor_multichannel_runtime_seconds{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} spectrum",
           "range": true,
           "refId": "B"
@@ -1057,7 +1045,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(kc761x_sensor_avg_cps{job=~\"$job\",instance=~\"$instance\"}, sensor)",
+        "definition": "label_values(kc761x_sensor_raw_cps{job=~\"$job\",instance=~\"$instance\"}, sensor)",
         "hide": 0,
         "includeAll": true,
         "label": "Sensor",
@@ -1065,7 +1053,7 @@
         "name": "sensor",
         "options": [],
         "query": {
-          "query": "label_values(kc761x_sensor_avg_cps{job=~\"$job\",instance=~\"$instance\"}, sensor)",
+          "query": "label_values(kc761x_sensor_raw_cps{job=~\"$job\",instance=~\"$instance\"}, sensor)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,

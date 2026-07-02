@@ -177,12 +177,12 @@ class KC761xCollector:
         for slot, sensor_status in enumerate(packet.sensors):
             labels = [str(slot), protocol.sensor_name(slot)]
             accumulating.add_metric(labels, int(packet.sensor_accumulating(slot)))
-            raw_cps.add_metric(labels, sensor_status.raw_cps)
-            avg_cps.add_metric(labels, sensor_status.avg_cps)
-            raw_dose.add_metric(labels, sensor_status.raw_dose_rate_mgy_h)
-            avg_dose.add_metric(labels, sensor_status.avg_dose_rate_mgy_h)
-            raw_dose_eq.add_metric(labels, sensor_status.raw_dose_equiv_rate_msv_h)
-            avg_dose_eq.add_metric(labels, sensor_status.avg_dose_equiv_rate_msv_h)
+            _add_nonnegative(raw_cps, labels, sensor_status.raw_cps)
+            _add_nonnegative(avg_cps, labels, sensor_status.avg_cps)
+            _add_nonnegative(raw_dose, labels, sensor_status.raw_dose_rate_mgy_h)
+            _add_nonnegative(avg_dose, labels, sensor_status.avg_dose_rate_mgy_h)
+            _add_nonnegative(raw_dose_eq, labels, sensor_status.raw_dose_equiv_rate_msv_h)
+            _add_nonnegative(avg_dose_eq, labels, sensor_status.avg_dose_equiv_rate_msv_h)
 
         yield accumulating
         yield raw_cps
@@ -221,10 +221,10 @@ class KC761xCollector:
         )
         for slot in range(3):
             metric_labels = [str(slot), protocol.sensor_name(slot)]
-            mc_runtime.add_metric(metric_labels, packet.multichannel_runtime_seconds[slot])
-            dose_runtime.add_metric(metric_labels, packet.dose_runtime_seconds[slot])
-            accumulated_dose.add_metric(metric_labels, packet.accumulated_dose_ugy[slot])
-            accumulated_dose_eq.add_metric(metric_labels, packet.accumulated_dose_equiv_usv[slot])
+            _add_nonnegative(mc_runtime, metric_labels, packet.multichannel_runtime_seconds[slot])
+            _add_nonnegative(dose_runtime, metric_labels, packet.dose_runtime_seconds[slot])
+            _add_nonnegative(accumulated_dose, metric_labels, packet.accumulated_dose_ugy[slot])
+            _add_nonnegative(accumulated_dose_eq, metric_labels, packet.accumulated_dose_equiv_usv[slot])
         yield mc_runtime
         yield dose_runtime
         yield accumulated_dose
@@ -460,6 +460,11 @@ def parse_listen(value: str) -> tuple[str, int]:
         return "0.0.0.0", int(value)
     host, port = value.rsplit(":", 1)
     return host, int(port)
+
+
+def _add_nonnegative(metric: GaugeMetricFamily, labels: list[str], value: float) -> None:
+    if value >= 0:
+        metric.add_metric(labels, value)
 
 
 def configure_logging(verbose: int) -> None:
