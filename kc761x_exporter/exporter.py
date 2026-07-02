@@ -12,7 +12,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from bleak import BleakClient, BleakScanner
 from prometheus_client import REGISTRY, start_http_server
-from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
+from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, InfoMetricFamily, Metric
 
 from . import protocol
 
@@ -51,7 +51,7 @@ class KC761xCollector:
         )
         self._connection_task = asyncio.run_coroutine_threadsafe(self._client.run_connection_loop(), self._loop)
 
-    def collect(self) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
+    def collect(self) -> Iterable[Metric]:
         with self._lock:
             result = self._scrape()
         yield from self._metric_families(result)
@@ -96,7 +96,7 @@ class KC761xCollector:
         result.duration_seconds = time.monotonic() - started
         return result
 
-    def _metric_families(self, result: ScrapeResult) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
+    def _metric_families(self, result: ScrapeResult) -> Iterable[Metric]:
         up = GaugeMetricFamily("kc761x_up", "Whether the KC761x BLE scrape succeeded")
         up.add_metric([], result.up)
         yield up
@@ -126,7 +126,7 @@ class KC761xCollector:
         if self.args.enable_spectrum:
             yield from self._spectrum_metrics(result.spectra)
 
-    def _status_metrics(self, packet: protocol.StatusPacket) -> Iterable[GaugeMetricFamily]:
+    def _status_metrics(self, packet: protocol.StatusPacket) -> Iterable[Metric]:
         battery = GaugeMetricFamily("kc761x_battery_ratio", "Battery charge ratio from the KC761x")
         battery.add_metric([], packet.battery_percent / 100.0)
         yield battery
@@ -162,22 +162,22 @@ class KC761xCollector:
         raw_cps = GaugeMetricFamily("kc761x_sensor_raw_cps", "Previous-second count rate from the KC761x", labels=["slot", "sensor"])
         avg_cps = GaugeMetricFamily("kc761x_sensor_avg_cps", "Smoothed count rate from the KC761x", labels=["slot", "sensor"])
         raw_dose = GaugeMetricFamily(
-            "kc761x_sensor_raw_dose_rate_mgy_per_hour",
+            "kc761x_sensor_raw_dose_rate_milligrays_per_hour",
             "Previous-second dose rate from the KC761x",
             labels=["slot", "sensor"],
         )
         avg_dose = GaugeMetricFamily(
-            "kc761x_sensor_avg_dose_rate_mgy_per_hour",
+            "kc761x_sensor_avg_dose_rate_milligrays_per_hour",
             "Smoothed dose rate from the KC761x",
             labels=["slot", "sensor"],
         )
         raw_dose_eq = GaugeMetricFamily(
-            "kc761x_sensor_raw_dose_equivalent_rate_msv_per_hour",
+            "kc761x_sensor_raw_dose_equivalent_rate_millisieverts_per_hour",
             "Previous-second dose equivalent rate from the KC761x",
             labels=["slot", "sensor"],
         )
         avg_dose_eq = GaugeMetricFamily(
-            "kc761x_sensor_avg_dose_equivalent_rate_msv_per_hour",
+            "kc761x_sensor_avg_dose_equivalent_rate_millisieverts_per_hour",
             "Smoothed dose equivalent rate from the KC761x",
             labels=["slot", "sensor"],
         )
@@ -200,7 +200,7 @@ class KC761xCollector:
         yield raw_dose_eq
         yield avg_dose_eq
 
-    def _device_info_metrics(self, packet: protocol.DeviceInfoPacket) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
+    def _device_info_metrics(self, packet: protocol.DeviceInfoPacket) -> Iterable[Metric]:
         info = InfoMetricFamily("kc761x_device", "KC761x device information")
         info.add_metric(
             [],
@@ -219,26 +219,38 @@ class KC761xCollector:
         yield info
 
         labels = ["slot", "sensor"]
-        mc_runtime = GaugeMetricFamily("kc761x_sensor_multichannel_runtime_seconds", "Spectrum accumulation runtime", labels=labels)
-        dose_runtime = GaugeMetricFamily("kc761x_sensor_dose_runtime_seconds", "Dose accumulation runtime", labels=labels)
-        accumulated_dose = GaugeMetricFamily("kc761x_sensor_accumulated_dose_ugy", "Accumulated dose", labels=labels)
-        accumulated_dose_eq = GaugeMetricFamily(
-            "kc761x_sensor_accumulated_dose_equivalent_usv",
-            "Accumulated dose equivalent",
+        mc_runtime = CounterMetricFamily(
+            "kc761x_sensor_multichannel_runtime_seconds_total",
+            "Total spectrum accumulation runtime reported by the KC761x",
+            labels=labels,
+        )
+        dose_runtime = CounterMetricFamily(
+            "kc761x_sensor_dose_runtime_seconds_total",
+            "Total dose accumulation runtime reported by the KC761x",
+            labels=labels,
+        )
+        dose = CounterMetricFamily(
+            "kc761x_sensor_dose_micrograys_total",
+            "Total absorbed dose reported by the KC761x",
+            labels=labels,
+        )
+        dose_eq = CounterMetricFamily(
+            "kc761x_sensor_dose_equivalent_microsieverts_total",
+            "Total dose equivalent reported by the KC761x",
             labels=labels,
         )
         for slot in range(3):
             metric_labels = [str(slot), protocol.sensor_name(slot)]
             _add_nonnegative(mc_runtime, metric_labels, packet.multichannel_runtime_seconds[slot])
             _add_nonnegative(dose_runtime, metric_labels, packet.dose_runtime_seconds[slot])
-            _add_nonnegative(accumulated_dose, metric_labels, packet.accumulated_dose_ugy[slot])
-            _add_nonnegative(accumulated_dose_eq, metric_labels, packet.accumulated_dose_equiv_usv[slot])
+            _add_nonnegative(dose, metric_labels, packet.dose_micrograys_total[slot])
+            _add_nonnegative(dose_eq, metric_labels, packet.dose_equivalent_microsieverts_total[slot])
         yield mc_runtime
         yield dose_runtime
-        yield accumulated_dose
-        yield accumulated_dose_eq
+        yield dose
+        yield dose_eq
 
-    def _spectrum_metrics(self, spectra: Sequence[protocol.SpectrumPacket]) -> Iterable[GaugeMetricFamily]:
+    def _spectrum_metrics(self, spectra: Sequence[protocol.SpectrumPacket]) -> Iterable[Metric]:
         spectrum = GaugeMetricFamily(
             "kc761x_spectrum_counts",
             "Spectrum counts by source and channel. Disabled by default because it creates thousands of time series.",
@@ -482,7 +494,7 @@ def parse_listen(value: str) -> tuple[str, int]:
     return host, int(port)
 
 
-def _add_nonnegative(metric: GaugeMetricFamily, labels: list[str], value: float) -> None:
+def _add_nonnegative(metric: Metric, labels: list[str], value: float) -> None:
     if value >= 0:
         metric.add_metric(labels, value)
 

@@ -42,7 +42,7 @@ def test_parse_device_info_packet() -> None:
     assert packet.device_id == "7601-0000-000001"
     assert packet.sensor_types == (2, 8, 5)
     assert packet.multichannel_runtime_seconds == (10, 30, 50)
-    assert packet.accumulated_dose_equiv_usv == (2.5, 4.5, 6.5)
+    assert packet.dose_equivalent_microsieverts_total == (2.5, 4.5, 6.5)
 
 
 def test_parse_spectrum_and_stream_packets() -> None:
@@ -74,4 +74,3 @@ def test_commands() -> None:
     assert protocol.command_get_device_info(0x45) == bytes.fromhex("00 54 45 00")
     assert protocol.command_set_auto_upload(0x46, True) == bytes.fromhex("00 62 46 ff ff ff 01 00")
     assert protocol.command_get_spectrum(0x47, 2) == bytes.fromhex("00 52 47 02 00")
-

@@ -67,15 +67,15 @@ The exporter exposes:
 - `kc761x_sensor_accumulating{slot}`
 - `kc761x_sensor_raw_cps{slot,sensor}`
 - `kc761x_sensor_avg_cps{slot,sensor}`
-- `kc761x_sensor_raw_dose_rate_mgy_per_hour{slot,sensor}`
-- `kc761x_sensor_avg_dose_rate_mgy_per_hour{slot,sensor}`
-- `kc761x_sensor_raw_dose_equivalent_rate_msv_per_hour{slot,sensor}`
-- `kc761x_sensor_avg_dose_equivalent_rate_msv_per_hour{slot,sensor}`
+- `kc761x_sensor_raw_dose_rate_milligrays_per_hour{slot,sensor}`
+- `kc761x_sensor_avg_dose_rate_milligrays_per_hour{slot,sensor}`
+- `kc761x_sensor_raw_dose_equivalent_rate_millisieverts_per_hour{slot,sensor}`
+- `kc761x_sensor_avg_dose_equivalent_rate_millisieverts_per_hour{slot,sensor}`
 - `kc761x_device_info{...} 1`
-- `kc761x_sensor_accumulated_dose_ugy{slot,sensor}`
-- `kc761x_sensor_accumulated_dose_equivalent_usv{slot,sensor}`
-- `kc761x_sensor_multichannel_runtime_seconds{slot,sensor}`
-- `kc761x_sensor_dose_runtime_seconds{slot,sensor}`
+- `kc761x_sensor_dose_micrograys_total{slot,sensor}`
+- `kc761x_sensor_dose_equivalent_microsieverts_total{slot,sensor}`
+- `kc761x_sensor_multichannel_runtime_seconds_total{slot,sensor}`
+- `kc761x_sensor_dose_runtime_seconds_total{slot,sensor}`
 - `kc761x_spectrum_counts{source,channel}` when `--enable-spectrum` is set.
 
 Disabled sensors report `-1` in the KC761x protocol. The exporter omits negative sensor samples instead of exporting them.

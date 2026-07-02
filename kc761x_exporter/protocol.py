@@ -111,8 +111,8 @@ class DeviceInfoPacket:
     device_id: str
     multichannel_runtime_seconds: tuple[int, int, int]
     dose_runtime_seconds: tuple[int, int, int]
-    accumulated_dose_ugy: tuple[float, float, float]
-    accumulated_dose_equiv_usv: tuple[float, float, float]
+    dose_micrograys_total: tuple[float, float, float]
+    dose_equivalent_microsieverts_total: tuple[float, float, float]
 
 
 @dataclass(frozen=True)
@@ -291,8 +291,8 @@ def parse_device_info_packet(data: bytes) -> DeviceInfoPacket:
         device_id=device_id,
         multichannel_runtime_seconds=tuple(mc_runtime),  # type: ignore[arg-type]
         dose_runtime_seconds=tuple(dose_runtime),  # type: ignore[arg-type]
-        accumulated_dose_ugy=tuple(sum_dose),  # type: ignore[arg-type]
-        accumulated_dose_equiv_usv=tuple(sum_dose_eq),  # type: ignore[arg-type]
+        dose_micrograys_total=tuple(sum_dose),  # type: ignore[arg-type]
+        dose_equivalent_microsieverts_total=tuple(sum_dose_eq),  # type: ignore[arg-type]
     )
 
 
@@ -335,4 +335,3 @@ def _u16(data: bytes, offset: int) -> int:
 def _require_len(data: bytes, expected: int, name: str) -> None:
     if len(data) < expected:
         raise ValueError(f"{name} packet too short: got {len(data)}, need {expected}")
-

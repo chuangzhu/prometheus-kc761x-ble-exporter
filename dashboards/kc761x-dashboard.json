@@ -623,8 +623,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_raw_dose_rate_mgy_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
-          "legendFormat": "{{instance}} {{sensor}} mGy/h",
+          "expr": "kc761x_sensor_raw_dose_rate_milligrays_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}*1000 >= 0",
+          "legendFormat": "{{instance}} {{sensor}} µGy/h",
           "range": true,
           "refId": "A"
         },
@@ -634,8 +634,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_raw_dose_equivalent_rate_msv_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
-          "legendFormat": "{{instance}} {{sensor}} mSv/h",
+          "expr": "kc761x_sensor_raw_dose_equivalent_rate_millisieverts_per_hour{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"}*1000 >= 0",
+          "legendFormat": "{{instance}} {{sensor}} µSv/h",
           "range": true,
           "refId": "B"
         }
@@ -697,8 +697,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_accumulated_dose_ugy{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
-          "legendFormat": "{{instance}} {{sensor}} uGy",
+          "expr": "kc761x_sensor_dose_micrograys_total{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
+          "legendFormat": "{{instance}} {{sensor}} µGy",
           "range": true,
           "refId": "A"
         },
@@ -708,8 +708,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_accumulated_dose_equivalent_usv{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
-          "legendFormat": "{{instance}} {{sensor}} uSv",
+          "expr": "kc761x_sensor_dose_equivalent_microsieverts_total{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
+          "legendFormat": "{{instance}} {{sensor}} µSv",
           "range": true,
           "refId": "B"
         }
@@ -771,7 +771,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_dose_runtime_seconds{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
+          "expr": "kc761x_sensor_dose_runtime_seconds_total{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} dose",
           "range": true,
           "refId": "A"
@@ -782,7 +782,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_sensor_multichannel_runtime_seconds{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
+          "expr": "kc761x_sensor_multichannel_runtime_seconds_total{job=~\"$job\",instance=~\"$instance\",sensor=~\"$sensor\"} >= 0",
           "legendFormat": "{{instance}} {{sensor}} spectrum",
           "range": true,
           "refId": "B"
