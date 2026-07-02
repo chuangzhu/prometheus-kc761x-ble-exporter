@@ -37,24 +37,29 @@ Then scrape:
 curl http://127.0.0.1:9108/metrics
 ```
 
+The exporter is synchronous: it connects to the KC761x and reads status/device info only when Prometheus scrapes `/metrics`. It does not poll the device on its own timer and it does not attach Prometheus sample timestamps.
+
 Useful options:
 
-- `--poll-interval 10`: actively request real-time status every 10 seconds.
-- `--device-info-interval 60`: refresh static/statistical device info every 60 seconds.
-- `--disable-auto-upload`: do not enable the device's 1 Hz automatic upload mode.
+- `--command-timeout 8`: seconds to wait for each KC761x command response.
+- `--discovery-timeout 5`: BLE discovery timeout when using `--name`.
 - `--enable-spectrum`: expose per-channel spectrum gauges as `kc761x_spectrum_counts{source,channel}`. This can create thousands of time series.
+- `--spectrum-source 0`: spectrum source to request when spectrum export is enabled. Repeat for multiple sources.
 - `--mtu 517`: request a large BLE MTU when the platform/backend supports it.
+
+Prometheus' default scrape timeout is 10 seconds. The default path performs BLE discovery if `--name` is used, connects, reads status, and reads device info; use `--address` for more predictable scrape duration. If `--enable-spectrum` is used, a scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. In that case set an explicit Prometheus `scrape_timeout` greater than the exporter `--command-timeout` budget, or leave spectrum export disabled.
 
 ## Metrics
 
 The exporter exposes:
 
-- `kc761x_up`: BLE session is connected.
-- `kc761x_last_packet_timestamp_seconds`: last parsed KC761x packet time.
-- `kc761x_battery_percent`
+- `kc761x_up`: KC761x BLE scrape succeeded.
+- `kc761x_scrape_duration_seconds`
+- `kc761x_scrape_decode_errors`
+- `kc761x_battery_ratio`
 - `kc761x_air_pressure_hpa`
 - `kc761x_device_temperature_celsius`
-- `kc761x_device_time_seconds`
+- `kc761x_device_time_seconds`: device clock value, not a Prometheus sample timestamp.
 - `kc761x_auto_upload_enabled`
 - `kc761x_sensor_selected`
 - `kc761x_sensor_accumulating{slot}`
@@ -69,6 +74,7 @@ The exporter exposes:
 - `kc761x_sensor_accumulated_dose_equivalent_usv{slot,sensor}`
 - `kc761x_sensor_multichannel_runtime_seconds{slot,sensor}`
 - `kc761x_sensor_dose_runtime_seconds{slot,sensor}`
+- `kc761x_spectrum_counts{source,channel}` when `--enable-spectrum` is set.
 
 Disabled sensors report `-1` in the KC761x protocol. The exporter preserves that value.
 
@@ -77,7 +83,7 @@ Disabled sensors report `-1` in the KC761x protocol. The exporter preserves that
 ```yaml
 scrape_configs:
   - job_name: kc761x
+    scrape_timeout: 10s
     static_configs:
       - targets: ["kc761x-host:9108"]
 ```
-

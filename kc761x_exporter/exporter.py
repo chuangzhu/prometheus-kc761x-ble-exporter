@@ -4,11 +4,14 @@ import argparse
 import asyncio
 import logging
 import signal
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 
 from bleak import BleakClient, BleakScanner
-from prometheus_client import Counter, Gauge, Info, start_http_server
+from prometheus_client import REGISTRY, start_http_server
+from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
 
 from . import protocol
 
@@ -16,73 +19,157 @@ from . import protocol
 LOG = logging.getLogger("kc761x_exporter")
 
 
-class KC761xMetrics:
-    def __init__(self, enable_spectrum: bool, max_spectrum_channels: int | None) -> None:
-        self.enable_spectrum = enable_spectrum
-        self.max_spectrum_channels = max_spectrum_channels
+@dataclass
+class ScrapeResult:
+    up: int = 0
+    status: protocol.StatusPacket | None = None
+    device_info: protocol.DeviceInfoPacket | None = None
+    spectra: list[protocol.SpectrumPacket] = field(default_factory=list)
+    decode_errors: int = 0
+    error: str = ""
+    duration_seconds: float = 0.0
 
-        self.up = Gauge("kc761x_up", "Whether the BLE session is connected")
-        self.last_packet = Gauge("kc761x_last_packet_timestamp_seconds", "Unix timestamp of the last parsed KC761x packet")
-        self.decode_errors = Counter("kc761x_decode_errors_total", "Number of KC761x notification decode errors")
 
-        self.battery = Gauge("kc761x_battery_percent", "Battery percentage")
-        self.air_pressure = Gauge("kc761x_air_pressure_hpa", "Air pressure in hPa")
-        self.temperature = Gauge("kc761x_device_temperature_celsius", "Device temperature")
-        self.device_time = Gauge("kc761x_device_time_seconds", "Device clock as Unix timestamp")
-        self.auto_upload = Gauge("kc761x_auto_upload_enabled", "Whether automatic upload is enabled")
-        self.selected_sensor = Gauge("kc761x_sensor_selected", "Selected sensor index: 0 gamma, 1 neutron, 2 pin")
-        self.sensor_accumulating = Gauge("kc761x_sensor_accumulating", "Whether sensor spectrum accumulation is enabled", ["slot", "sensor"])
+class KC761xCollector:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self._sync = 0
+        self._lock = threading.Lock()
 
-        labels = ["slot", "sensor"]
-        self.raw_cps = Gauge("kc761x_sensor_raw_cps", "Previous-second count rate", labels)
-        self.avg_cps = Gauge("kc761x_sensor_avg_cps", "Smoothed count rate", labels)
-        self.raw_dose = Gauge("kc761x_sensor_raw_dose_rate_mgy_per_hour", "Previous-second dose rate", labels)
-        self.avg_dose = Gauge("kc761x_sensor_avg_dose_rate_mgy_per_hour", "Smoothed dose rate", labels)
-        self.raw_dose_eq = Gauge(
+    def collect(self) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
+        with self._lock:
+            result = asyncio.run(self._scrape())
+        yield from self._metric_families(result)
+
+    async def _scrape(self) -> ScrapeResult:
+        started = time.monotonic()
+        result = ScrapeResult()
+        try:
+            client = KC761xBleClient(
+                address=self.args.address,
+                name=self.args.name,
+                discovery_timeout=self.args.discovery_timeout,
+                command_timeout=self.args.command_timeout,
+                spectrum_idle_timeout=self.args.spectrum_idle_timeout,
+                mtu=self.args.mtu,
+                next_sync=self._next_sync,
+            )
+            result = await client.scrape(self.args.enable_spectrum, self.args.spectrum_source)
+            result.up = 1
+        except Exception as exc:
+            LOG.warning("KC761x scrape failed: %s", exc)
+            result.error = str(exc)
+        result.duration_seconds = time.monotonic() - started
+        return result
+
+    def _metric_families(self, result: ScrapeResult) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
+        up = GaugeMetricFamily("kc761x_up", "Whether the KC761x BLE scrape succeeded")
+        up.add_metric([], result.up)
+        yield up
+
+        duration = GaugeMetricFamily("kc761x_scrape_duration_seconds", "Duration of the KC761x BLE scrape")
+        duration.add_metric([], result.duration_seconds)
+        yield duration
+
+        decode_errors = GaugeMetricFamily(
+            "kc761x_scrape_decode_errors",
+            "Number of KC761x notification decode errors during this scrape",
+        )
+        decode_errors.add_metric([], result.decode_errors)
+        yield decode_errors
+
+        if result.error:
+            error = InfoMetricFamily("kc761x_scrape_error", "Last KC761x scrape error")
+            error.add_metric([], {"message": result.error})
+            yield error
+
+        if result.status is not None:
+            yield from self._status_metrics(result.status)
+
+        if result.device_info is not None:
+            yield from self._device_info_metrics(result.device_info)
+
+        if self.args.enable_spectrum:
+            yield from self._spectrum_metrics(result.spectra)
+
+    def _status_metrics(self, packet: protocol.StatusPacket) -> Iterable[GaugeMetricFamily]:
+        battery = GaugeMetricFamily("kc761x_battery_ratio", "Battery charge ratio from the KC761x")
+        battery.add_metric([], packet.battery_percent / 100.0)
+        yield battery
+
+        air_pressure = GaugeMetricFamily("kc761x_air_pressure_hpa", "Air pressure in hPa from the KC761x")
+        air_pressure.add_metric([], packet.air_pressure_hpa)
+        yield air_pressure
+
+        temperature = GaugeMetricFamily("kc761x_device_temperature_celsius", "Device temperature from the KC761x")
+        temperature.add_metric([], packet.device_temperature_c)
+        yield temperature
+
+        device_time = GaugeMetricFamily(
+            "kc761x_device_time_seconds",
+            "KC761x device clock as Unix time in seconds; this is a device value, not a Prometheus sample timestamp",
+        )
+        device_time.add_metric([], packet.device_time_seconds)
+        yield device_time
+
+        auto_upload = GaugeMetricFamily("kc761x_auto_upload_enabled", "Whether KC761x automatic upload is enabled")
+        auto_upload.add_metric([], packet.auto_upload_status)
+        yield auto_upload
+
+        selected_sensor = GaugeMetricFamily("kc761x_sensor_selected", "Selected sensor index: 0 gamma, 1 neutron, 2 pin")
+        selected_sensor.add_metric([], packet.selected_sensor)
+        yield selected_sensor
+
+        accumulating = GaugeMetricFamily(
+            "kc761x_sensor_accumulating",
+            "Whether sensor spectrum accumulation is enabled",
+            labels=["slot", "sensor"],
+        )
+        raw_cps = GaugeMetricFamily("kc761x_sensor_raw_cps", "Previous-second count rate from the KC761x", labels=["slot", "sensor"])
+        avg_cps = GaugeMetricFamily("kc761x_sensor_avg_cps", "Smoothed count rate from the KC761x", labels=["slot", "sensor"])
+        raw_dose = GaugeMetricFamily(
+            "kc761x_sensor_raw_dose_rate_mgy_per_hour",
+            "Previous-second dose rate from the KC761x",
+            labels=["slot", "sensor"],
+        )
+        avg_dose = GaugeMetricFamily(
+            "kc761x_sensor_avg_dose_rate_mgy_per_hour",
+            "Smoothed dose rate from the KC761x",
+            labels=["slot", "sensor"],
+        )
+        raw_dose_eq = GaugeMetricFamily(
             "kc761x_sensor_raw_dose_equivalent_rate_msv_per_hour",
-            "Previous-second dose equivalent rate",
-            labels,
+            "Previous-second dose equivalent rate from the KC761x",
+            labels=["slot", "sensor"],
         )
-        self.avg_dose_eq = Gauge(
+        avg_dose_eq = GaugeMetricFamily(
             "kc761x_sensor_avg_dose_equivalent_rate_msv_per_hour",
-            "Smoothed dose equivalent rate",
-            labels,
+            "Smoothed dose equivalent rate from the KC761x",
+            labels=["slot", "sensor"],
         )
-
-        self.device_info = Info("kc761x_device", "KC761x device information")
-        self.mc_runtime = Gauge("kc761x_sensor_multichannel_runtime_seconds", "Spectrum accumulation runtime", labels)
-        self.dose_runtime = Gauge("kc761x_sensor_dose_runtime_seconds", "Dose accumulation runtime", labels)
-        self.accumulated_dose = Gauge("kc761x_sensor_accumulated_dose_ugy", "Accumulated dose", labels)
-        self.accumulated_dose_eq = Gauge("kc761x_sensor_accumulated_dose_equivalent_usv", "Accumulated dose equivalent", labels)
-
-        self.spectrum = None
-        self.pulse_total = None
-        if enable_spectrum:
-            self.spectrum = Gauge("kc761x_spectrum_counts", "Spectrum counts by source and channel", ["source", "channel"])
-            self.pulse_total = Counter("kc761x_stream_pulses_total", "Stream-mode pulses observed by source", ["source"])
-
-    def set_status(self, packet: protocol.StatusPacket) -> None:
-        self.last_packet.set(time.time())
-        self.battery.set(packet.battery_percent)
-        self.air_pressure.set(packet.air_pressure_hpa)
-        self.temperature.set(packet.device_temperature_c)
-        self.device_time.set(packet.device_time_seconds)
-        self.auto_upload.set(packet.auto_upload_status)
-        self.selected_sensor.set(packet.selected_sensor)
 
         for slot, sensor_status in enumerate(packet.sensors):
-            labels = (str(slot), protocol.sensor_name(slot))
-            self.sensor_accumulating.labels(*labels).set(int(packet.sensor_accumulating(slot)))
-            self.raw_cps.labels(*labels).set(sensor_status.raw_cps)
-            self.raw_dose.labels(*labels).set(sensor_status.raw_dose_rate_mgy_h)
-            self.raw_dose_eq.labels(*labels).set(sensor_status.raw_dose_equiv_rate_msv_h)
-            self.avg_cps.labels(*labels).set(sensor_status.avg_cps)
-            self.avg_dose.labels(*labels).set(sensor_status.avg_dose_rate_mgy_h)
-            self.avg_dose_eq.labels(*labels).set(sensor_status.avg_dose_equiv_rate_msv_h)
+            labels = [str(slot), protocol.sensor_name(slot)]
+            accumulating.add_metric(labels, int(packet.sensor_accumulating(slot)))
+            raw_cps.add_metric(labels, sensor_status.raw_cps)
+            avg_cps.add_metric(labels, sensor_status.avg_cps)
+            raw_dose.add_metric(labels, sensor_status.raw_dose_rate_mgy_h)
+            avg_dose.add_metric(labels, sensor_status.avg_dose_rate_mgy_h)
+            raw_dose_eq.add_metric(labels, sensor_status.raw_dose_equiv_rate_msv_h)
+            avg_dose_eq.add_metric(labels, sensor_status.avg_dose_equiv_rate_msv_h)
 
-    def set_device_info(self, packet: protocol.DeviceInfoPacket) -> None:
-        self.last_packet.set(time.time())
-        self.device_info.info(
+        yield accumulating
+        yield raw_cps
+        yield avg_cps
+        yield raw_dose
+        yield avg_dose
+        yield raw_dose_eq
+        yield avg_dose_eq
+
+    def _device_info_metrics(self, packet: protocol.DeviceInfoPacket) -> Iterable[GaugeMetricFamily | InfoMetricFamily]:
+        info = InfoMetricFamily("kc761x_device", "KC761x device information")
+        info.add_metric(
+            [],
             {
                 "device_id": packet.device_id,
                 "device_model": protocol.device_model_name(packet.device_model),
@@ -93,157 +180,172 @@ class KC761xMetrics:
                 "sensor0_type": protocol.sensor_type_name(packet.sensor_types[0]),
                 "sensor1_type": protocol.sensor_type_name(packet.sensor_types[1]),
                 "sensor2_type": protocol.sensor_type_name(packet.sensor_types[2]),
-            }
+            },
+        )
+        yield info
+
+        labels = ["slot", "sensor"]
+        mc_runtime = GaugeMetricFamily("kc761x_sensor_multichannel_runtime_seconds", "Spectrum accumulation runtime", labels=labels)
+        dose_runtime = GaugeMetricFamily("kc761x_sensor_dose_runtime_seconds", "Dose accumulation runtime", labels=labels)
+        accumulated_dose = GaugeMetricFamily("kc761x_sensor_accumulated_dose_ugy", "Accumulated dose", labels=labels)
+        accumulated_dose_eq = GaugeMetricFamily(
+            "kc761x_sensor_accumulated_dose_equivalent_usv",
+            "Accumulated dose equivalent",
+            labels=labels,
         )
         for slot in range(3):
-            labels = (str(slot), protocol.sensor_name(slot))
-            self.mc_runtime.labels(*labels).set(packet.multichannel_runtime_seconds[slot])
-            self.dose_runtime.labels(*labels).set(packet.dose_runtime_seconds[slot])
-            self.accumulated_dose.labels(*labels).set(packet.accumulated_dose_ugy[slot])
-            self.accumulated_dose_eq.labels(*labels).set(packet.accumulated_dose_equiv_usv[slot])
+            metric_labels = [str(slot), protocol.sensor_name(slot)]
+            mc_runtime.add_metric(metric_labels, packet.multichannel_runtime_seconds[slot])
+            dose_runtime.add_metric(metric_labels, packet.dose_runtime_seconds[slot])
+            accumulated_dose.add_metric(metric_labels, packet.accumulated_dose_ugy[slot])
+            accumulated_dose_eq.add_metric(metric_labels, packet.accumulated_dose_equiv_usv[slot])
+        yield mc_runtime
+        yield dose_runtime
+        yield accumulated_dose
+        yield accumulated_dose_eq
 
-    def set_spectrum(self, packet: protocol.SpectrumPacket) -> None:
-        self.last_packet.set(time.time())
-        if self.spectrum is None:
-            return
-        source = protocol.sensor_name(packet.source)
-        for channel, value in protocol.iter_spectrum_points(packet, self.max_spectrum_channels):
-            self.spectrum.labels(source, str(channel)).set(value)
-
-    def add_stream(self, packet: protocol.StreamPacket) -> None:
-        self.last_packet.set(time.time())
-        if self.pulse_total is None:
-            return
-        counts: dict[int, int] = {}
-        for source, _channel in packet.pulses:
-            counts[source] = counts.get(source, 0) + 1
-        for source, count in counts.items():
-            self.pulse_total.labels(protocol.sensor_name(source)).inc(count)
-
-
-class KC761xExporter:
-    def __init__(self, args: argparse.Namespace, metrics: KC761xMetrics) -> None:
-        self.args = args
-        self.metrics = metrics
-        self._sync = 0
-
-    async def run(self) -> None:
-        while True:
-            try:
-                address = self.args.address or await self._discover_address(self.args.name, self.args.discovery_timeout)
-                await self._run_session(address)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                LOG.exception("BLE session failed")
-                self.metrics.up.set(0)
-                await asyncio.sleep(self.args.reconnect_delay)
-
-    async def _discover_address(self, name: str, timeout: float) -> str:
-        LOG.info("scanning for BLE device with name containing %r", name)
-        devices = await BleakScanner.discover(timeout=timeout)
-        for device in devices:
-            if device.name and name.lower() in device.name.lower():
-                LOG.info("found %s at %s", device.name, device.address)
-                return device.address
-        raise RuntimeError(f"no BLE device found with name containing {name!r}")
-
-    async def _run_session(self, address: str) -> None:
-        LOG.info("connecting to %s", address)
-        async with BleakClient(address) as client:
-            self.metrics.up.set(1)
-            if self.args.mtu:
-                await self._request_mtu(client, self.args.mtu)
-
-            await client.start_notify(protocol.TX_CHAR_UUID, self._on_notify)
-
-            if not self.args.disable_auto_upload:
-                await self._write(client, protocol.command_set_auto_upload(self._next_sync(), True))
-
-            await self._poll_loop(client)
-
-    async def _poll_loop(self, client: BleakClient) -> None:
-        last_device_info = 0.0
-        last_spectrum = 0.0
-        while client.is_connected:
-            now = time.monotonic()
-            await self._write(client, protocol.command_get_status(self._next_sync()))
-            if now - last_device_info >= self.args.device_info_interval:
-                await self._write(client, protocol.command_get_device_info(self._next_sync()))
-                last_device_info = now
-            if (
-                self.args.enable_spectrum
-                and self.args.request_spectrum_interval > 0
-                and now - last_spectrum >= self.args.request_spectrum_interval
-            ):
-                for source in self.args.spectrum_source:
-                    await self._write(client, protocol.command_get_spectrum(self._next_sync(), source))
-                last_spectrum = now
-            await asyncio.sleep(self.args.poll_interval)
-        self.metrics.up.set(0)
-
-    async def _request_mtu(self, client: BleakClient, mtu: int) -> None:
-        request = getattr(client, "request_mtu", None)
-        if request is None:
-            LOG.info("BLE backend does not expose request_mtu(); continuing with default MTU")
-            return
-        try:
-            negotiated = await request(mtu)
-            LOG.info("requested MTU %s, negotiated %s", mtu, negotiated)
-        except Exception:
-            LOG.exception("MTU request failed; continuing")
-
-    async def _write(self, client: BleakClient, payload: bytes) -> None:
-        await client.write_gatt_char(protocol.RX_CHAR_UUID, payload, response=True)
-
-    def _on_notify(self, _sender: object, data: bytearray) -> None:
-        try:
-            for packet in protocol.parse_packets(bytes(data)):
-                self._handle_packet(packet)
-        except Exception:
-            self.metrics.decode_errors.inc()
-            LOG.exception("failed to decode notification: %s", bytes(data).hex(" "))
-
-    def _handle_packet(self, packet: protocol.Packet) -> None:
-        if isinstance(packet, protocol.StatusPacket):
-            self.metrics.set_status(packet)
-        elif isinstance(packet, protocol.DeviceInfoPacket):
-            self.metrics.set_device_info(packet)
-        elif isinstance(packet, protocol.SpectrumPacket):
-            self.metrics.set_spectrum(packet)
-        elif isinstance(packet, protocol.StreamPacket):
-            self.metrics.add_stream(packet)
-        elif isinstance(packet, protocol.AckPacket) and not packet.ok:
-            LOG.warning("device rejected command 0x%02x", packet.command)
+    def _spectrum_metrics(self, spectra: Sequence[protocol.SpectrumPacket]) -> Iterable[GaugeMetricFamily]:
+        spectrum = GaugeMetricFamily(
+            "kc761x_spectrum_counts",
+            "Spectrum counts by source and channel. Disabled by default because it creates thousands of time series.",
+            labels=["source", "channel"],
+        )
+        for packet in spectra:
+            source = protocol.sensor_name(packet.source)
+            for channel, value in protocol.iter_spectrum_points(packet, self.args.max_spectrum_channels):
+                spectrum.add_metric([source, str(channel)], value)
+        yield spectrum
 
     def _next_sync(self) -> int:
         self._sync = (self._sync + 1) & 0xFF
         return self._sync
 
 
-async def async_main(argv: Sequence[str] | None = None) -> None:
+class KC761xBleClient:
+    def __init__(
+        self,
+        address: str | None,
+        name: str | None,
+        discovery_timeout: float,
+        command_timeout: float,
+        spectrum_idle_timeout: float,
+        mtu: int | None,
+        next_sync: Callable[[], int],
+    ) -> None:
+        self.address = address
+        self.name = name
+        self.discovery_timeout = discovery_timeout
+        self.command_timeout = command_timeout
+        self.spectrum_idle_timeout = spectrum_idle_timeout
+        self.mtu = mtu
+        self.next_sync = next_sync
+        self.decode_errors = 0
+        self._queue: asyncio.Queue[protocol.Packet] = asyncio.Queue()
+
+    async def scrape(self, enable_spectrum: bool, spectrum_sources: Sequence[int]) -> ScrapeResult:
+        address = self.address or await self._discover_address()
+        result = ScrapeResult()
+        async with BleakClient(address) as client:
+            if self.mtu:
+                await self._request_mtu(client)
+            await client.start_notify(protocol.TX_CHAR_UUID, self._on_notify)
+
+            status_sync = self.next_sync()
+            await self._write(client, protocol.command_get_status(status_sync))
+            result.status = await self._wait_for(
+                lambda packet: isinstance(packet, protocol.StatusPacket) and packet.sync == status_sync and not packet.auto,
+                self.command_timeout,
+            )
+
+            info_sync = self.next_sync()
+            await self._write(client, protocol.command_get_device_info(info_sync))
+            result.device_info = await self._wait_for(
+                lambda packet: isinstance(packet, protocol.DeviceInfoPacket) and packet.sync == info_sync,
+                self.command_timeout,
+            )
+
+            if enable_spectrum:
+                for source in spectrum_sources:
+                    spectrum_sync = self.next_sync()
+                    await self._write(client, protocol.command_get_spectrum(spectrum_sync, source))
+                    result.spectra.extend(await self._collect_spectrum(spectrum_sync, source))
+
+            await client.stop_notify(protocol.TX_CHAR_UUID)
+
+        result.decode_errors = self.decode_errors
+        return result
+
+    async def _discover_address(self) -> str:
+        if not self.name:
+            raise RuntimeError("either address or name is required")
+        LOG.info("scanning for BLE device with name containing %r", self.name)
+        devices = await BleakScanner.discover(timeout=self.discovery_timeout)
+        for device in devices:
+            if device.name and self.name.lower() in device.name.lower():
+                LOG.info("found %s at %s", device.name, device.address)
+                return device.address
+        raise RuntimeError(f"no BLE device found with name containing {self.name!r}")
+
+    async def _request_mtu(self, client: BleakClient) -> None:
+        request = getattr(client, "request_mtu", None)
+        if request is None:
+            LOG.info("BLE backend does not expose request_mtu(); continuing with default MTU")
+            return
+        negotiated = await request(self.mtu)
+        LOG.debug("requested MTU %s, negotiated %s", self.mtu, negotiated)
+
+    async def _write(self, client: BleakClient, payload: bytes) -> None:
+        await client.write_gatt_char(protocol.RX_CHAR_UUID, payload, response=True)
+
+    async def _wait_for(self, predicate: Callable[[protocol.Packet], bool], timeout: float) -> protocol.Packet:
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for KC761x response")
+            packet = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+            if predicate(packet):
+                return packet
+
+    async def _collect_spectrum(self, sync: int, source: int) -> list[protocol.SpectrumPacket]:
+        packets: list[protocol.SpectrumPacket] = []
+        deadline = time.monotonic() + self.command_timeout
+        while True:
+            timeout = self.spectrum_idle_timeout if packets else max(0.0, deadline - time.monotonic())
+            if timeout <= 0:
+                if packets:
+                    return packets
+                raise TimeoutError("timed out waiting for KC761x spectrum response")
+            try:
+                packet = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+            except TimeoutError:
+                return packets
+            if isinstance(packet, protocol.SpectrumPacket) and packet.sync == sync and packet.source == source and not packet.auto:
+                packets.append(packet)
+
+    def _on_notify(self, _sender: object, data: bytearray) -> None:
+        try:
+            for packet in protocol.parse_packets(bytes(data)):
+                self._queue.put_nowait(packet)
+        except Exception:
+            self.decode_errors += 1
+            LOG.exception("failed to decode notification: %s", bytes(data).hex(" "))
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     configure_logging(args.verbose)
+
+    REGISTRY.register(KC761xCollector(args))
 
     host, port = parse_listen(args.listen)
     start_http_server(port, addr=host)
     LOG.info("metrics listening on http://%s:%d/metrics", host, port)
 
-    metrics = KC761xMetrics(args.enable_spectrum, args.max_spectrum_channels)
-    exporter = KC761xExporter(args, metrics)
-
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(signum, stop.set)
-
-    task = asyncio.create_task(exporter.run())
-    await stop.wait()
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
+    stop.wait()
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -252,19 +354,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     target.add_argument("--address", help="BLE address of the KC761x")
     target.add_argument("--name", help="Substring of advertised BLE device name to discover")
     parser.add_argument("--listen", default="0.0.0.0:9108", help="Metrics listen address, default: 0.0.0.0:9108")
-    parser.add_argument("--poll-interval", type=float, default=10.0, help="Seconds between active status polls")
-    parser.add_argument("--device-info-interval", type=float, default=60.0, help="Seconds between device info polls")
-    parser.add_argument("--discovery-timeout", type=float, default=10.0, help="BLE discovery timeout in seconds")
-    parser.add_argument("--reconnect-delay", type=float, default=5.0, help="Seconds before reconnect after failure")
+    parser.add_argument("--command-timeout", type=float, default=8.0, help="Seconds to wait for each KC761x command response")
+    parser.add_argument("--discovery-timeout", type=float, default=5.0, help="BLE discovery timeout in seconds")
     parser.add_argument("--mtu", type=int, default=517, help="Requested BLE MTU, if backend supports it")
-    parser.add_argument("--disable-auto-upload", action="store_true", help="Do not enable KC761x automatic upload")
-    parser.add_argument("--enable-spectrum", action="store_true", help="Expose spectrum channel gauges")
+    parser.add_argument("--enable-spectrum", action="store_true", help="Expose spectrum channel gauges; disabled by default")
     parser.add_argument("--max-spectrum-channels", type=int, default=2048, help="Maximum spectrum channels to expose")
     parser.add_argument(
-        "--request-spectrum-interval",
+        "--spectrum-idle-timeout",
         type=float,
-        default=0.0,
-        help="Request full spectra each poll when > 0. Automatic spectrum uploads are still parsed.",
+        default=0.5,
+        help="When spectrum is enabled, stop waiting after this many seconds without another spectrum packet",
     )
     parser.add_argument(
         "--spectrum-source",
@@ -276,7 +375,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase log verbosity")
     args = parser.parse_args(argv)
-    if args.request_spectrum_interval > 0 and not args.spectrum_source:
+    if args.enable_spectrum and not args.spectrum_source:
         args.spectrum_source = [0]
     return args
 
@@ -295,10 +394,6 @@ def configure_logging(verbose: int) -> None:
     elif verbose >= 2:
         level = logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
-
-def main(argv: Sequence[str] | None = None) -> None:
-    asyncio.run(async_main(argv))
 
 
 if __name__ == "__main__":
