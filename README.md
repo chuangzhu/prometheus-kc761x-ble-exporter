@@ -88,3 +88,7 @@ scrape_configs:
     static_configs:
       - targets: ["kc761x-host:9108"]
 ```
+
+## Grafana
+
+Import [dashboards/kc761x-dashboard.json](./dashboards/kc761x-dashboard.json) and select your Prometheus datasource. The dashboard includes an optional spectrum panel that only shows data when the exporter is started with `--enable-spectrum`.
