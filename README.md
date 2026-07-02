@@ -37,17 +37,18 @@ Then scrape:
 curl http://127.0.0.1:9108/metrics
 ```
 
-The exporter is synchronous: it connects to the KC761x and reads status/device info only when Prometheus scrapes `/metrics`. It does not poll the device on its own timer and it does not attach Prometheus sample timestamps.
+The exporter is synchronous from Prometheus' point of view: it reads status/device info only when Prometheus scrapes `/metrics`. It keeps the BLE connection open between scrapes to avoid repeated BLE connection setup, reconnecting only after a failed or dropped link. It does not poll the device on its own timer and it does not attach Prometheus sample timestamps.
 
 Useful options:
 
+- `--scrape-timeout 9`: exporter-side maximum seconds for a scrape.
 - `--command-timeout 8`: seconds to wait for each KC761x command response.
 - `--discovery-timeout 5`: BLE discovery timeout when using `--name`.
 - `--enable-spectrum`: expose per-channel spectrum gauges as `kc761x_spectrum_counts{source,channel}`. This can create thousands of time series.
 - `--spectrum-source 0`: spectrum source to request when spectrum export is enabled. Repeat for multiple sources.
 - `--mtu 517`: request a large BLE MTU when the platform/backend supports it.
 
-Prometheus' default scrape timeout is 10 seconds. The default path performs BLE discovery if `--name` is used, connects, reads status, and reads device info; use `--address` for more predictable scrape duration. If `--enable-spectrum` is used, a scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. In that case set an explicit Prometheus `scrape_timeout` greater than the exporter `--command-timeout` budget, or leave spectrum export disabled.
+Prometheus' default scrape timeout is 10 seconds. The first scrape performs BLE discovery if `--name` is used and opens the BLE connection; later scrapes reuse that connection. Use `--address` for more predictable startup behavior. If `--enable-spectrum` is used, a scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. In that case set an explicit Prometheus `scrape_timeout` greater than the exporter `--scrape-timeout`, or leave spectrum export disabled.
 
 ## Metrics
 
