@@ -946,12 +946,12 @@
           },
           "editorMode": "code",
           "expr": "kc761x_spectrum_counts{job=~\"$job\",instance=~\"$instance\",source=~\"$source\"}",
-          "legendFormat": "ch {{channel}}",
+          "legendFormat": "{{energy_kiloelectronvolts}} keV",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Spectrum Channels",
+      "title": "Spectrum Energy",
       "type": "timeseries"
     }
   ],

@@ -69,8 +69,46 @@ def test_parse_spectrum_and_stream_packets() -> None:
     assert packets[1].pulses == ((0, 10), (1, 11))
 
 
+def test_parse_calibration_packet_honors_rad0_energy_selection() -> None:
+    data = bytearray(150)
+    struct.pack_into("<BBH", data, 0, 0x56, protocol.FLAG_CAL_DATA, 150)
+    struct.pack_into("<BB", data, 4, 2, 1)
+    struct.pack_into("<ffffff", data, 6, 2.0, 10.0, 1.0, 0.0, 1.0, 0.0)
+    struct.pack_into("<ffff", data, 50, 0.0, 0.0, 3.0, 0.0)
+    struct.pack_into("<ffff", data, 66, 0.0, 0.0, 4.0, 0.0)
+    struct.pack_into("<ffff", data, 82, 0.0, 0.0, 5.0, 0.0)
+    struct.pack_into("<ffff", data, 98, 0.0, 0.0, 10.0, 0.0)
+    struct.pack_into("<ffff", data, 114, 0.0, 0.0, 20.0, 0.0)
+    struct.pack_into("<ffff", data, 130, 0.0, 0.0, 30.0, 0.0)
+    struct.pack_into("<HH", data, 146, 100, 200)
+
+    packet = protocol.parse_calibration_packet(bytes(data))
+
+    assert packet.rad0_energy_calibration_select == 1
+    assert packet.energy_kiloelectronvolts(0, 7) == 52.0
+    assert packet.energy_kiloelectronvolts(1, 7) == 28.0
+
+
+def test_parse_calibration_packet_uses_rad0_factory_segments() -> None:
+    data = bytearray(150)
+    struct.pack_into("<BBH", data, 0, 0x57, protocol.FLAG_CAL_DATA, 150)
+    struct.pack_into("<BB", data, 4, 2, 0)
+    struct.pack_into("<ffffff", data, 6, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0)
+    struct.pack_into("<ffff", data, 98, 0.0, 0.0, 10.0, 0.0)
+    struct.pack_into("<ffff", data, 114, 0.0, 0.0, 20.0, 0.0)
+    struct.pack_into("<ffff", data, 130, 0.0, 0.0, 30.0, 0.0)
+    struct.pack_into("<HH", data, 146, 100, 200)
+
+    packet = protocol.parse_calibration_packet(bytes(data))
+
+    assert packet.energy_kiloelectronvolts(0, 99) == 990.0
+    assert packet.energy_kiloelectronvolts(0, 100) == 2000.0
+    assert packet.energy_kiloelectronvolts(0, 201) == 6030.0
+
+
 def test_commands() -> None:
     assert protocol.command_get_status(0x44) == bytes.fromhex("00 53 44 00")
     assert protocol.command_get_device_info(0x45) == bytes.fromhex("00 54 45 00")
+    assert protocol.command_get_calibration(0x46) == bytes.fromhex("00 55 46 00")
     assert protocol.command_set_auto_upload(0x46, True) == bytes.fromhex("00 62 46 ff ff ff 01 00")
     assert protocol.command_get_spectrum(0x47, 2) == bytes.fromhex("00 52 47 02 00")

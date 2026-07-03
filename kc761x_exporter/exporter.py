@@ -25,6 +25,7 @@ class ScrapeResult:
     up: int = 0
     status: protocol.StatusPacket | None = None
     device_info: protocol.DeviceInfoPacket | None = None
+    calibration: protocol.CalibrationPacket | None = None
     spectra: list[protocol.SpectrumPacket] = field(default_factory=list)
     decode_errors: int = 0
     error: str = ""
@@ -124,7 +125,7 @@ class KC761xCollector:
             yield from self._device_info_metrics(result.device_info)
 
         if self.args.enable_spectrum:
-            yield from self._spectrum_metrics(result.spectra)
+            yield from self._spectrum_metrics(result.spectra, result.calibration)
 
     def _status_metrics(self, packet: protocol.StatusPacket) -> Iterable[Metric]:
         battery = GaugeMetricFamily("kc761x_battery_ratio", "Battery charge ratio from the KC761x")
@@ -250,16 +251,24 @@ class KC761xCollector:
         yield dose
         yield dose_eq
 
-    def _spectrum_metrics(self, spectra: Sequence[protocol.SpectrumPacket]) -> Iterable[Metric]:
+    def _spectrum_metrics(
+        self,
+        spectra: Sequence[protocol.SpectrumPacket],
+        calibration: protocol.CalibrationPacket | None,
+    ) -> Iterable[Metric]:
         spectrum = GaugeMetricFamily(
             "kc761x_spectrum_counts",
-            "Spectrum counts by source and channel. Disabled by default because it creates thousands of time series.",
-            labels=["source", "channel"],
+            "Spectrum counts by source and calibrated energy. Disabled by default because it creates thousands of time series.",
+            labels=["source", "energy_kiloelectronvolts"],
         )
+        if calibration is None:
+            yield spectrum
+            return
         for packet in spectra:
             source = protocol.sensor_name(packet.source)
             for channel, value in protocol.iter_spectrum_points(packet, self.args.max_spectrum_channels):
-                spectrum.add_metric([source, str(channel)], value)
+                energy = calibration.energy_kiloelectronvolts(packet.source, channel)
+                spectrum.add_metric([source, format_energy_label(energy)], value)
         yield spectrum
 
     def _next_sync(self) -> int:
@@ -330,6 +339,13 @@ class KC761xBleClient:
             )
 
             if enable_spectrum:
+                calibration_sync = self.next_sync()
+                await self._write(self._client, protocol.command_get_calibration(calibration_sync))
+                result.calibration = await self._wait_for(
+                    lambda packet: isinstance(packet, protocol.CalibrationPacket) and packet.sync == calibration_sync,
+                    self.command_timeout,
+                )
+
                 for source in spectrum_sources:
                     spectrum_sync = self.next_sync()
                     await self._write(self._client, protocol.command_get_spectrum(spectrum_sync, source))
@@ -464,7 +480,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--discovery-timeout", type=float, default=5.0, help="BLE discovery timeout in seconds")
     parser.add_argument("--reconnect-interval", type=float, default=5.0, help="Seconds between background BLE reconnect attempts")
     parser.add_argument("--mtu", type=int, default=517, help="Requested BLE MTU, if backend supports it")
-    parser.add_argument("--enable-spectrum", action="store_true", help="Expose spectrum channel gauges; disabled by default")
+    parser.add_argument("--enable-spectrum", action="store_true", help="Expose calibrated spectrum energy gauges; disabled by default")
     parser.add_argument("--max-spectrum-channels", type=int, default=2048, help="Maximum spectrum channels to expose")
     parser.add_argument(
         "--spectrum-idle-timeout",
@@ -497,6 +513,10 @@ def parse_listen(value: str) -> tuple[str, int]:
 def _add_nonnegative(metric: Metric, labels: list[str], value: float) -> None:
     if value >= 0:
         metric.add_metric(labels, value)
+
+
+def format_energy_label(energy_kiloelectronvolts: float) -> str:
+    return f"{energy_kiloelectronvolts:.3f}"
 
 
 def configure_logging(verbose: int) -> None:

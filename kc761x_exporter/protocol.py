@@ -11,6 +11,7 @@ TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 CMD_GET_MC_DATA = 0x52
 CMD_GET_STATUS = 0x53
 CMD_GET_DEVICE_INFO = 0x54
+CMD_GET_CAL_DATA = 0x55
 CMD_SET_STATUS = 0x62
 
 FLAG_MC_RESPONSE = 0xA0
@@ -19,6 +20,7 @@ FLAG_STATUS_RESPONSE = 0xA2
 FLAG_STATUS_AUTO = 0xA3
 FLAG_STREAM = 0xA4
 FLAG_DEVICE_INFO = 0xA5
+FLAG_CAL_DATA = 0xA6
 FLAG_ACK = 0xAA
 
 SENSOR_NAMES = {
@@ -116,6 +118,50 @@ class DeviceInfoPacket:
 
 
 @dataclass(frozen=True)
+class CalibrationPacket:
+    sync: int
+    packet_len: int
+    factory_calibration_version: int
+    rad0_energy_calibration_select: int
+    energy_zoom: tuple[float, float, float]
+    energy_offset_kiloelectronvolts: tuple[float, float, float]
+    rad0_custom_energy_calibration: tuple[float, float, float, float]
+    rad1_factory_energy_calibration: tuple[float, float, float, float]
+    rad2_factory_energy_calibration: tuple[float, float, float, float]
+    rad0_factory_energy_calibration_low: tuple[float, float, float, float]
+    rad0_factory_energy_calibration_mid: tuple[float, float, float, float]
+    rad0_factory_energy_calibration_high: tuple[float, float, float, float]
+    rad0_factory_energy_calibration_node1: int
+    rad0_factory_energy_calibration_node2: int
+
+    def energy_kiloelectronvolts(self, source: int, channel: int) -> float:
+        if source == 0:
+            coefficients = self._rad0_coefficients(channel)
+        elif source == 1:
+            coefficients = self.rad1_factory_energy_calibration
+        elif source == 2:
+            coefficients = self.rad2_factory_energy_calibration
+        else:
+            coefficients = (0.0, 0.0, 1.0, 0.0)
+
+        original = evaluate_energy_polynomial(coefficients, channel)
+        zoom = self.energy_zoom[source] if source in (0, 1, 2) else 1.0
+        offset = self.energy_offset_kiloelectronvolts[source] if source in (0, 1, 2) else 0.0
+        return zoom * original + offset
+
+    def _rad0_coefficients(self, channel: int) -> tuple[float, float, float, float]:
+        if self.rad0_energy_calibration_select == 1:
+            return self.rad0_custom_energy_calibration
+        if self.factory_calibration_version == 2:
+            if channel < self.rad0_factory_energy_calibration_node1:
+                return self.rad0_factory_energy_calibration_low
+            if channel <= self.rad0_factory_energy_calibration_node2:
+                return self.rad0_factory_energy_calibration_mid
+            return self.rad0_factory_energy_calibration_high
+        return self.rad0_factory_energy_calibration_mid
+
+
+@dataclass(frozen=True)
 class AckPacket:
     sync: int
     packet_len: int
@@ -123,7 +169,7 @@ class AckPacket:
     command: int
 
 
-Packet = StatusPacket | SpectrumPacket | StreamPacket | DeviceInfoPacket | AckPacket
+Packet = StatusPacket | SpectrumPacket | StreamPacket | DeviceInfoPacket | CalibrationPacket | AckPacket
 
 
 def command_get_status(sync: int) -> bytes:
@@ -132,6 +178,10 @@ def command_get_status(sync: int) -> bytes:
 
 def command_get_device_info(sync: int) -> bytes:
     return bytes((0x00, CMD_GET_DEVICE_INFO, sync & 0xFF, 0x00))
+
+
+def command_get_calibration(sync: int) -> bytes:
+    return bytes((0x00, CMD_GET_CAL_DATA, sync & 0xFF, 0x00))
 
 
 def command_set_auto_upload(sync: int, enabled: bool) -> bytes:
@@ -163,6 +213,9 @@ def parse_packets(data: bytes) -> list[Packet]:
             pos += packet.packet_len
         elif flag == FLAG_DEVICE_INFO:
             packet = parse_device_info_packet(data[pos : pos + 100])
+            pos += packet.packet_len
+        elif flag == FLAG_CAL_DATA:
+            packet = parse_calibration_packet(data[pos : pos + 150])
             pos += packet.packet_len
         elif flag == FLAG_ACK:
             packet = parse_ack_packet(data[pos : pos + 6])
@@ -296,6 +349,42 @@ def parse_device_info_packet(data: bytes) -> DeviceInfoPacket:
     )
 
 
+def parse_calibration_packet(data: bytes) -> CalibrationPacket:
+    _require_len(data, 150, "calibration")
+    sync, flag, packet_len = struct.unpack_from("<BBH", data, 0)
+    if flag != FLAG_CAL_DATA:
+        raise ValueError(f"not a calibration packet: 0x{flag:02x}")
+    if packet_len != 150:
+        raise ValueError(f"unexpected calibration packet length {packet_len}")
+
+    factory_calibration_version, rad0_select = struct.unpack_from("<BB", data, 4)
+    rad0_zoom, rad0_offset, rad1_zoom, rad1_offset, rad2_zoom, rad2_offset = struct.unpack_from("<ffffff", data, 6)
+    rad0_custom = struct.unpack_from("<ffff", data, 50)
+    rad1_factory = struct.unpack_from("<ffff", data, 66)
+    rad2_factory = struct.unpack_from("<ffff", data, 82)
+    rad0_factory_low = struct.unpack_from("<ffff", data, 98)
+    rad0_factory_mid = struct.unpack_from("<ffff", data, 114)
+    rad0_factory_high = struct.unpack_from("<ffff", data, 130)
+    node1, node2 = struct.unpack_from("<HH", data, 146)
+
+    return CalibrationPacket(
+        sync=sync,
+        packet_len=packet_len,
+        factory_calibration_version=factory_calibration_version,
+        rad0_energy_calibration_select=rad0_select,
+        energy_zoom=(float(rad0_zoom), float(rad1_zoom), float(rad2_zoom)),
+        energy_offset_kiloelectronvolts=(float(rad0_offset), float(rad1_offset), float(rad2_offset)),
+        rad0_custom_energy_calibration=tuple(float(value) for value in rad0_custom),  # type: ignore[arg-type]
+        rad1_factory_energy_calibration=tuple(float(value) for value in rad1_factory),  # type: ignore[arg-type]
+        rad2_factory_energy_calibration=tuple(float(value) for value in rad2_factory),  # type: ignore[arg-type]
+        rad0_factory_energy_calibration_low=tuple(float(value) for value in rad0_factory_low),  # type: ignore[arg-type]
+        rad0_factory_energy_calibration_mid=tuple(float(value) for value in rad0_factory_mid),  # type: ignore[arg-type]
+        rad0_factory_energy_calibration_high=tuple(float(value) for value in rad0_factory_high),  # type: ignore[arg-type]
+        rad0_factory_energy_calibration_node1=node1,
+        rad0_factory_energy_calibration_node2=node2,
+    )
+
+
 def parse_ack_packet(data: bytes) -> AckPacket:
     _require_len(data, 6, "ack")
     sync, flag, packet_len, status, command = struct.unpack_from("<BBHBB", data, 0)
@@ -326,6 +415,11 @@ def iter_spectrum_points(packet: SpectrumPacket, max_channel: int | None = None)
         if value == 0xFFFF:
             continue
         yield channel, value
+
+
+def evaluate_energy_polynomial(coefficients: tuple[float, float, float, float], channel: int) -> float:
+    a, b, c, d = coefficients
+    return ((a * channel + b) * channel + c) * channel + d
 
 
 def _u16(data: bytes, offset: int) -> int:
