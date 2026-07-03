@@ -45,7 +45,7 @@ Useful options:
 - `--command-timeout 8`: seconds to wait for each KC761x command response.
 - `--discovery-timeout 5`: BLE discovery timeout when using `--name`.
 - `--reconnect-interval 5`: seconds between background BLE reconnect attempts.
-- `--enable-spectrum`: expose per-energy spectrum gauges as `kc761x_spectrum_counts{source,energy_kiloelectronvolts}`. This can create thousands of time series.
+- `--enable-spectrum`: expose calibrated spectrum histograms as `kc761x_spectrum_electronvolts_bucket{source,le}`. This can create thousands of buckets.
 - `--spectrum-source 0`: spectrum source to request when spectrum export is enabled. Repeat for multiple sources.
 - `--mtu 517`: request a large BLE MTU when the platform/backend supports it.
 
@@ -76,7 +76,7 @@ The exporter exposes:
 - `kc761x_sensor_dose_equivalent_microsieverts_total{slot,sensor}`
 - `kc761x_sensor_multichannel_runtime_seconds_total{slot,sensor}`
 - `kc761x_sensor_dose_runtime_seconds_total{slot,sensor}`
-- `kc761x_spectrum_counts{source,energy_kiloelectronvolts}` when `--enable-spectrum` is set. Energy labels are calibrated from the device calibration data, honoring `RAD0_ENERGY_CAL_SELECT`.
+- `kc761x_spectrum_electronvolts_bucket{source,le}`, `kc761x_spectrum_electronvolts_count`, and `kc761x_spectrum_electronvolts_sum` when `--enable-spectrum` is set. Bucket boundaries are calibrated electronvolts from the device calibration data, honoring `RAD0_ENERGY_CAL_SELECT`.
 
 Disabled sensors report `-1` in the KC761x protocol. The exporter omits negative sensor samples instead of exporting them.
 

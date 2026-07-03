@@ -12,7 +12,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from bleak import BleakClient, BleakScanner
 from prometheus_client import REGISTRY, start_http_server
-from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, InfoMetricFamily, Metric
+from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, HistogramMetricFamily, InfoMetricFamily, Metric
 
 from . import protocol
 
@@ -256,19 +256,33 @@ class KC761xCollector:
         spectra: Sequence[protocol.SpectrumPacket],
         calibration: protocol.CalibrationPacket | None,
     ) -> Iterable[Metric]:
-        spectrum = GaugeMetricFamily(
-            "kc761x_spectrum_counts",
-            "Spectrum counts by source and calibrated energy. Disabled by default because it creates thousands of time series.",
-            labels=["source", "energy_kiloelectronvolts"],
+        spectrum = HistogramMetricFamily(
+            "kc761x_spectrum_electronvolts",
+            "Spectrum event distribution by calibrated energy. Disabled by default because it creates thousands of buckets.",
+            labels=["source"],
         )
         if calibration is None:
             yield spectrum
             return
+
+        source_buckets: dict[int, dict[int, int]] = {}
         for packet in spectra:
-            source = protocol.sensor_name(packet.source)
+            buckets = source_buckets.setdefault(packet.source, {})
             for channel, value in protocol.iter_spectrum_points(packet, self.args.max_spectrum_channels):
                 energy = calibration.energy_kiloelectronvolts(packet.source, channel)
-                spectrum.add_metric([source, format_energy_label(energy)], value)
+                energy_electronvolts = round(energy * 1000)
+                buckets[energy_electronvolts] = buckets.get(energy_electronvolts, 0) + value
+
+        for source_id, bucket_counts in source_buckets.items():
+            cumulative = 0
+            buckets: list[tuple[str, float]] = []
+            weighted_sum = 0.0
+            for energy_electronvolts, count in sorted(bucket_counts.items()):
+                cumulative += count
+                weighted_sum += energy_electronvolts * count
+                buckets.append((str(energy_electronvolts), float(cumulative)))
+            buckets.append(("+Inf", float(cumulative)))
+            spectrum.add_metric([protocol.sensor_name(source_id)], buckets, weighted_sum)
         yield spectrum
 
     def _next_sync(self) -> int:
@@ -513,10 +527,6 @@ def parse_listen(value: str) -> tuple[str, int]:
 def _add_nonnegative(metric: Metric, labels: list[str], value: float) -> None:
     if value >= 0:
         metric.add_metric(labels, value)
-
-
-def format_energy_label(energy_kiloelectronvolts: float) -> str:
-    return f"{energy_kiloelectronvolts:.3f}"
 
 
 def configure_logging(verbose: int) -> None:

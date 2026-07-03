@@ -46,6 +46,12 @@
       "id": "table",
       "name": "Table",
       "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "heatmap",
+      "name": "Heatmap",
+      "version": ""
     }
   ],
   "annotations": {
@@ -892,19 +898,6 @@
       },
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -926,16 +919,44 @@
       },
       "id": 12,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "hidden",
-          "placement": "bottom",
-          "showLegend": false
+        "calculate": false,
+        "cellGap": 1,
+        "cellValues": {
+          "unit": "cps"
         },
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "Spectral",
+          "steps": 128
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-9
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "showValue": "never",
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "decimals": 0,
+          "reverse": false,
+          "unit": "ev"
+        },
+        "yBucketBound": "auto"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -945,14 +966,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "kc761x_spectrum_counts{job=~\"$job\",instance=~\"$instance\",source=~\"$source\"}",
-          "legendFormat": "{{energy_kiloelectronvolts}} keV",
+          "expr": "kc761x_spectrum_electronvolts_bucket{job=~\"$job\",instance=~\"$instance\",source=~\"$source\",le!=\"+Inf\"}",
+          "format": "heatmap",
+          "legendFormat": "<= {{le}} eV",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Spectrum Energy",
-      "type": "timeseries"
+      "title": "Spectrum Over Time",
+      "type": "heatmap"
     }
   ],
   "refresh": "30s",
@@ -1071,7 +1093,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(kc761x_spectrum_counts{job=~\"$job\",instance=~\"$instance\"}, source)",
+        "definition": "label_values(kc761x_spectrum_electronvolts_bucket{job=~\"$job\",instance=~\"$instance\"}, source)",
         "hide": 0,
         "includeAll": true,
         "label": "Spectrum Source",
@@ -1079,7 +1101,7 @@
         "name": "source",
         "options": [],
         "query": {
-          "query": "label_values(kc761x_spectrum_counts{job=~\"$job\",instance=~\"$instance\"}, source)",
+          "query": "label_values(kc761x_spectrum_electronvolts_bucket{job=~\"$job\",instance=~\"$instance\"}, source)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,
