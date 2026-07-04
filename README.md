@@ -2,10 +2,8 @@
 
 Prometheus exporter for KC761A/B/C/CN radiation meters using the KC761x BLE UART-like protocol.
 
-The device exposes a Nordic-UART-style GATT service:
+![Grafana screenshot](https://github.com/user-attachments/assets/9816a3d6-69b2-47a9-90ab-058c07d35062)
 
-- RX write characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
-- TX notify characteristic: `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
 
 ## Install
 
