@@ -407,13 +407,11 @@ def device_model_name(device_model: int) -> str:
     return DEVICE_MODEL_NAMES.get(device_model, f"unknown_{device_model}")
 
 
-def iter_spectrum_points(packet: SpectrumPacket, max_channel: int | None = None) -> Iterable[tuple[int, int]]:
+def iter_spectrum_points(packet: SpectrumPacket, max_channel: int) -> Iterable[tuple[int, int]]:
     for index, value in enumerate(packet.counts):
         channel = packet.offset + index
-        if max_channel is not None and channel >= max_channel:
+        if channel >= max_channel:
             break
-        if value == 0xFFFF:
-            continue
         yield channel, value
 
 

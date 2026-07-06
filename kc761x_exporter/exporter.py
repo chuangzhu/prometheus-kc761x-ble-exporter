@@ -285,15 +285,22 @@ class KC761xCollector:
             yield spectrum
             return
 
-        source_buckets: dict[int, dict[int, int]] = {}
+        source_channels: dict[int, dict[int, int]] = {}
         for packet in spectra:
-            buckets = source_buckets.setdefault(packet.source, {})
-            for channel, value in protocol.iter_spectrum_points(packet, self.args.max_spectrum_channels):
-                energy = calibration.energy_kiloelectronvolts(packet.source, channel)
-                energy_electronvolts = round(energy * 1000)
-                buckets[energy_electronvolts] = buckets.get(energy_electronvolts, 0) + value
+            channels = source_channels.setdefault(packet.source, {})
+            for channel, value in protocol.iter_spectrum_points(packet, self.args.spectrum_channels):
+                channels[channel] = value
 
-        for source_id, bucket_counts in source_buckets.items():
+        if any(len(channels) != self.args.spectrum_channels for channels in source_channels.values()):
+            yield spectrum
+            return
+
+        for source_id, channels in source_channels.items():
+            bucket_counts: dict[int, int] = {}
+            for channel, value in channels.items():
+                energy = calibration.energy_kiloelectronvolts(source_id, channel)
+                energy_electronvolts = round(energy * 1000)
+                bucket_counts[energy_electronvolts] = bucket_counts.get(energy_electronvolts, 0) + value
             cumulative = 0
             buckets: list[tuple[str, float]] = []
             weighted_sum = 0.0
@@ -538,7 +545,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mtu", type=int, default=517, help="Requested BLE MTU, if backend supports it")
     parser.add_argument("--enable-spectrum", action="store_true", help="Expose calibrated spectrum histogram on the main listener; disabled by default")
     parser.add_argument("--spectrum-listen", help="Optional separate listen address for spectrum histogram metrics")
-    parser.add_argument("--max-spectrum-channels", type=int, default=2048, help="Maximum spectrum channels to expose")
+    parser.add_argument("--spectrum-channels", type=int, default=2048, help="Expected fixed number of spectrum channels")
     parser.add_argument(
         "--spectrum-idle-timeout",
         type=float,

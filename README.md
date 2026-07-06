@@ -45,6 +45,7 @@ Useful options:
 - `--reconnect-interval 5`: seconds between background BLE reconnect attempts.
 - `--enable-spectrum`: expose calibrated spectrum histograms on the main listener. This can create thousands of buckets.
 - `--spectrum-listen 0.0.0.0:9109`: expose only the expensive spectrum histogram on a separate listener. This does not require `--enable-spectrum`; when set, the main listener stays lightweight.
+- `--spectrum-channels 2048`: expected fixed number of spectrum channels. If fewer channels are received, the spectrum histogram is omitted for that scrape.
 - `--spectrum-source 0`: spectrum source to request when spectrum export is enabled. Repeat for multiple sources.
 - `--mtu 517`: request a large BLE MTU when the platform/backend supports it.
 
