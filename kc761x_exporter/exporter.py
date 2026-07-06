@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from bleak import BleakClient, BleakScanner
-from prometheus_client import REGISTRY, start_http_server
+from prometheus_client import REGISTRY, CollectorRegistry, start_http_server
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily, HistogramMetricFamily, InfoMetricFamily, Metric
 
 from . import protocol
@@ -54,8 +54,17 @@ class KC761xCollector:
 
     def collect(self) -> Iterable[Metric]:
         with self._lock:
-            result = self._scrape()
-        yield from self._metric_families(result)
+            result = self._scrape(
+                include_status=True,
+                include_device_info=True,
+                include_spectrum=self.args.enable_spectrum and self.args.spectrum_listen is None,
+            )
+        yield from self._metric_families(result, include_status=True, include_device_info=True, include_spectrum=self.args.enable_spectrum and self.args.spectrum_listen is None)
+
+    def collect_spectrum(self) -> Iterable[Metric]:
+        with self._lock:
+            result = self._scrape(include_status=False, include_device_info=False, include_spectrum=True)
+        yield from self._metric_families(result, include_status=False, include_device_info=False, include_spectrum=True)
 
     def close(self) -> None:
         future = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
@@ -72,7 +81,7 @@ class KC761xCollector:
         self._loop.run_forever()
         self._loop.close()
 
-    def _scrape(self) -> ScrapeResult:
+    def _scrape(self, include_status: bool, include_device_info: bool, include_spectrum: bool) -> ScrapeResult:
         started = time.monotonic()
         result = ScrapeResult()
         if not self._client.is_connected:
@@ -82,7 +91,12 @@ class KC761xCollector:
 
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._client.scrape(self.args.enable_spectrum, self.args.spectrum_source),
+                self._client.scrape(
+                    include_status=include_status,
+                    include_device_info=include_device_info,
+                    include_spectrum=include_spectrum,
+                    spectrum_sources=self.args.spectrum_source,
+                ),
                 self._loop,
             )
             result = future.result(timeout=self.args.scrape_timeout)
@@ -97,7 +111,13 @@ class KC761xCollector:
         result.duration_seconds = time.monotonic() - started
         return result
 
-    def _metric_families(self, result: ScrapeResult) -> Iterable[Metric]:
+    def _metric_families(
+        self,
+        result: ScrapeResult,
+        include_status: bool,
+        include_device_info: bool,
+        include_spectrum: bool,
+    ) -> Iterable[Metric]:
         up = GaugeMetricFamily("kc761x_up", "Whether the KC761x BLE scrape succeeded")
         up.add_metric([], result.up)
         yield up
@@ -118,13 +138,13 @@ class KC761xCollector:
             error.add_metric([], {"message": result.error})
             yield error
 
-        if result.status is not None:
+        if include_status and result.status is not None:
             yield from self._status_metrics(result.status)
 
-        if result.device_info is not None:
+        if include_device_info and result.device_info is not None:
             yield from self._device_info_metrics(result.device_info)
 
-        if self.args.enable_spectrum:
+        if include_spectrum:
             yield from self._spectrum_metrics(result.spectra, result.calibration)
 
     def _status_metrics(self, packet: protocol.StatusPacket) -> Iterable[Metric]:
@@ -290,6 +310,14 @@ class KC761xCollector:
         return self._sync
 
 
+class KC761xSpectrumCollector:
+    def __init__(self, collector: KC761xCollector) -> None:
+        self.collector = collector
+
+    def collect(self) -> Iterable[Metric]:
+        yield from self.collector.collect_spectrum()
+
+
 class KC761xBleClient:
     def __init__(
         self,
@@ -330,7 +358,13 @@ class KC761xBleClient:
                     await self._disconnect()
             await asyncio.sleep(self.reconnect_interval)
 
-    async def scrape(self, enable_spectrum: bool, spectrum_sources: Sequence[int]) -> ScrapeResult:
+    async def scrape(
+        self,
+        include_status: bool,
+        include_device_info: bool,
+        include_spectrum: bool,
+        spectrum_sources: Sequence[int],
+    ) -> ScrapeResult:
         result = ScrapeResult()
         self.decode_errors = 0
         if self._client is None:
@@ -338,21 +372,23 @@ class KC761xBleClient:
 
         try:
             self._drain_queue()
-            status_sync = self.next_sync()
-            await self._write(self._client, protocol.command_get_status(status_sync))
-            result.status = await self._wait_for(
-                lambda packet: isinstance(packet, protocol.StatusPacket) and packet.sync == status_sync and not packet.auto,
-                self.command_timeout,
-            )
+            if include_status:
+                status_sync = self.next_sync()
+                await self._write(self._client, protocol.command_get_status(status_sync))
+                result.status = await self._wait_for(
+                    lambda packet: isinstance(packet, protocol.StatusPacket) and packet.sync == status_sync and not packet.auto,
+                    self.command_timeout,
+                )
 
-            info_sync = self.next_sync()
-            await self._write(self._client, protocol.command_get_device_info(info_sync))
-            result.device_info = await self._wait_for(
-                lambda packet: isinstance(packet, protocol.DeviceInfoPacket) and packet.sync == info_sync,
-                self.command_timeout,
-            )
+            if include_device_info:
+                info_sync = self.next_sync()
+                await self._write(self._client, protocol.command_get_device_info(info_sync))
+                result.device_info = await self._wait_for(
+                    lambda packet: isinstance(packet, protocol.DeviceInfoPacket) and packet.sync == info_sync,
+                    self.command_timeout,
+                )
 
-            if enable_spectrum:
+            if include_spectrum:
                 calibration_sync = self.next_sync()
                 await self._write(self._client, protocol.command_get_calibration(calibration_sync))
                 result.calibration = await self._wait_for(
@@ -473,6 +509,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     host, port = parse_listen(args.listen)
     start_http_server(port, addr=host)
     LOG.info("metrics listening on http://%s:%d/metrics", host, port)
+    if args.spectrum_listen:
+        spectrum_registry = CollectorRegistry(auto_describe=False)
+        spectrum_registry.register(KC761xSpectrumCollector(collector))
+        spectrum_host, spectrum_port = parse_listen(args.spectrum_listen)
+        start_http_server(spectrum_port, addr=spectrum_host, registry=spectrum_registry)
+        LOG.info("spectrum metrics listening on http://%s:%d/metrics", spectrum_host, spectrum_port)
 
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())
@@ -494,7 +536,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--discovery-timeout", type=float, default=5.0, help="BLE discovery timeout in seconds")
     parser.add_argument("--reconnect-interval", type=float, default=5.0, help="Seconds between background BLE reconnect attempts")
     parser.add_argument("--mtu", type=int, default=517, help="Requested BLE MTU, if backend supports it")
-    parser.add_argument("--enable-spectrum", action="store_true", help="Expose calibrated spectrum energy gauges; disabled by default")
+    parser.add_argument("--enable-spectrum", action="store_true", help="Expose calibrated spectrum histogram on the main listener; disabled by default")
+    parser.add_argument("--spectrum-listen", help="Optional separate listen address for spectrum histogram metrics")
     parser.add_argument("--max-spectrum-channels", type=int, default=2048, help="Maximum spectrum channels to expose")
     parser.add_argument(
         "--spectrum-idle-timeout",
@@ -512,7 +555,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase log verbosity")
     args = parser.parse_args(argv)
-    if args.enable_spectrum and not args.spectrum_source:
+    if (args.enable_spectrum or args.spectrum_listen) and not args.spectrum_source:
         args.spectrum_source = [0]
     return args
 

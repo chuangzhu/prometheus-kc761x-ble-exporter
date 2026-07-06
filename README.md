@@ -43,11 +43,12 @@ Useful options:
 - `--command-timeout 8`: seconds to wait for each KC761x command response.
 - `--discovery-timeout 5`: BLE discovery timeout when using `--name`.
 - `--reconnect-interval 5`: seconds between background BLE reconnect attempts.
-- `--enable-spectrum`: expose calibrated spectrum histograms as `kc761x_spectrum_electronvolts_bucket{source,le}`. This can create thousands of buckets.
+- `--enable-spectrum`: expose calibrated spectrum histograms on the main listener. This can create thousands of buckets.
+- `--spectrum-listen 0.0.0.0:9109`: expose only the expensive spectrum histogram on a separate listener. This does not require `--enable-spectrum`; when set, the main listener stays lightweight.
 - `--spectrum-source 0`: spectrum source to request when spectrum export is enabled. Repeat for multiple sources.
 - `--mtu 517`: request a large BLE MTU when the platform/backend supports it.
 
-Prometheus' default scrape timeout is 10 seconds. Startup and reconnect discovery happen outside the scrape path; use `--address` for more predictable connection setup. If `--enable-spectrum` is used, a connected scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. In that case set an explicit Prometheus `scrape_timeout` greater than the exporter `--scrape-timeout`, or leave spectrum export disabled.
+Prometheus' default scrape timeout is 10 seconds. Startup and reconnect discovery happen outside the scrape path; use `--address` for more predictable connection setup. If spectrum export is used, a connected scrape can exceed 10 seconds depending on MTU, packet loss, and selected sources. Prefer `--spectrum-listen` and scrape that listener as a separate Prometheus job less frequently. Set an explicit Prometheus `scrape_timeout` greater than the exporter `--scrape-timeout` for the spectrum job.
 
 ## Metrics
 
@@ -86,6 +87,12 @@ scrape_configs:
     scrape_timeout: 10s
     static_configs:
       - targets: ["kc761x-host:9108"]
+
+  - job_name: kc761x_spectrum
+    scrape_interval: 5m
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ["kc761x-host:9109"]
 ```
 
 ## Grafana
